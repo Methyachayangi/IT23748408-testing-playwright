@@ -21,13 +21,13 @@ DEFAULT_SHEET_NAME = " Test cases"
 DEFAULT_FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.pixelssuite.com/chat-translator")
 
 DEFAULT_INPUT_COLUMN_CANDIDATES = [
-    "Singlish",
     "Input",
     "Singlish Input",
     "Test Input",
     "Source",
     "Sentence",
     "Text",
+    "Singlish",
 ]
 
 DEFAULT_EXPECTED_COLUMN_CANDIDATES = [
@@ -59,6 +59,21 @@ DEFAULT_RETRY_WAIT_MS = 1000
 DEFAULT_TYPE_DELAY_MS = 30
 DEFAULT_TIMEOUT_MS = 60000
 DEFAULT_SLOW_MO_MS = 0
+
+def _is_page_closed(page) -> bool:
+    try:
+        return page.is_closed()
+    except Exception:
+        return True
+
+def _safe_wait(page, ms: int) -> bool:
+    if _is_page_closed(page):
+        return False
+    try:
+        page.wait_for_timeout(max(0, int(ms)))
+        return True
+    except Exception:
+        return False
 
 def _configure_stdout():
     try:
@@ -316,6 +331,14 @@ def _read_output(is_chat: bool, output_locator) -> str:
         pass
     return ""
 
+def _clear_output(page, output_locator):
+    try:
+        output_locator.evaluate(
+            """(el) => { if (el && 'value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); } }"""
+        )
+    except Exception:
+        pass
+
 def _find_chat_locators(page, timeout_ms: int):
     deadline = time.time() + (max(1, timeout_ms) / 1000)
     last_debug = None
@@ -400,16 +423,22 @@ def run_test():
         print(f"Error reading Excel file: {e}")
         return
 
+    print(f"Available sheets: {', '.join(wb.sheetnames)}")
+
     if args.sheet and args.sheet in wb.sheetnames:
         ws = wb[args.sheet]
     else:
         ws = wb.active
+    print(f"Using sheet: {ws.title}")
 
     header_row = int(args.header_row or 0)
     if header_row <= 0:
         header_row = _find_header_row(ws, int(args.max_header_scan_rows))
 
     header_values = _header_values(ws, header_row)
+    printable_header = [str(v) if v is not None else "" for v in header_values]
+    print(f"Detected header row: {header_row}")
+    print(f"Header values: {printable_header}")
 
     input_col_idx = _find_column_index(header_values, args.input_col, DEFAULT_INPUT_COLUMN_CANDIDATES)
     expected_col_idx = _find_column_index(header_values, args.expected_col, DEFAULT_EXPECTED_COLUMN_CANDIDATES)
@@ -429,6 +458,15 @@ def run_test():
 
     actual_col_idx = actual_col_idx or _ensure_column(ws, header_row, header_values, actual_col_name)
     status_col_idx = status_col_idx or _ensure_column(ws, header_row, header_values, status_col_name)
+
+    col_name = lambda idx: (printable_header[idx - 1] if idx and idx - 1 < len(printable_header) else "")
+    print(
+        "Detected columns: "
+        f"Input={input_col_idx}('{col_name(input_col_idx)}'), "
+        f"Expected={expected_col_idx}('{col_name(expected_col_idx)}'), "
+        f"Actual={actual_col_idx}('{col_name(actual_col_idx)}'), "
+        f"Status={status_col_idx}('{col_name(status_col_idx)}')"
+    )
 
     rows_total = max(0, int(ws.max_row or 0) - header_row)
     print(f"Starting Frontend-Only test with {rows_total} rows...")
@@ -463,14 +501,22 @@ def run_test():
                 print(f"Error locating chat UI elements: {e}")
                 browser.close()
                 return
+            try:
+                error_locator = page.get_by_text("Failed to fetch", exact=False).first
+            except Exception:
+                error_locator = None
         else:
             input_locator = page.locator("textarea")
             output_locator = page.locator("div.card").filter(has_text=re.compile(r"\\bSinhala\\b")).locator("div.bg-slate-50").first
             action_locator = None
+            error_locator = None
 
         # 4. Iterate Rows
         processed = 0
         for row_index in range(header_row + 1, int(ws.max_row or 0) + 1):
+            if _is_page_closed(page):
+                print("Browser page closed. Stopping remaining tests.")
+                break
             if not _is_top_left_of_merged_cell(ws, row_index, input_col_idx):
                 continue
 
@@ -490,23 +536,35 @@ def run_test():
             try:
                 _dismiss_overlays(page)
                 prev_output = _read_output(is_chat, output_locator)
+                _clear_output(page, output_locator)
                 _ensure_input_value(page, input_locator, singlish_input, int(args.type_delay_ms))
 
                 if action_locator:
                     action_locator.click()
 
-                page.wait_for_timeout(max(0, int(args.wait_ms)))
+                if not _safe_wait(page, int(args.wait_ms)):
+                    raise RuntimeError("Browser page closed during wait.")
                 
                 # Wait for visible content - retry a few times if empty
                 actual_output = ""
                 tries = max(1, int(args.retries))
                 for i in range(tries):
+                    if error_locator:
+                        try:
+                            if error_locator.is_visible():
+                                page.wait_for_timeout(max(0, int(args.retry_wait_ms)))
+                                if action_locator:
+                                    action_locator.click()
+                        except Exception:
+                            pass
                     current = _read_output(is_chat, output_locator)
                     if not current:
-                        page.wait_for_timeout(max(0, int(args.retry_wait_ms)))
+                        if not _safe_wait(page, int(args.retry_wait_ms)):
+                            raise RuntimeError("Browser page closed during retry wait.")
                         continue
                     if prev_output and current == prev_output:
-                        page.wait_for_timeout(max(0, int(args.retry_wait_ms)))
+                        if not _safe_wait(page, int(args.retry_wait_ms)):
+                            raise RuntimeError("Browser page closed during retry wait.")
                         continue
                     if current:
                         actual_output = current
@@ -539,6 +597,9 @@ def run_test():
                         wb.save(args.output)
                     except Exception:
                         pass
+                if _is_page_closed(page):
+                    print("Browser page closed. Stopping remaining tests.")
+                    break
 
         if args.keep_open and not args.headless:
             try:
@@ -548,6 +609,9 @@ def run_test():
             print("Keeping browser open. Press CTRL+C to stop.")
             try:
                 while True:
+                    if _is_page_closed(page):
+                        print("Browser page closed.")
+                        break
                     page.wait_for_timeout(1000)
             except KeyboardInterrupt:
                 try:
