@@ -7,6 +7,7 @@
 **Student Registration Number:** IT23748408  
 **Testing Type:** Chat Sinhala Transliteration Accuracy Testing  
 **Website Tested:** https://www.pixelssuite.com/chat-translator  
+**Repo Link:** https://github.com/Methyachayangi/IT23748408-testing-playwright.git
 
 ## Project Description
 
