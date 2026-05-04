@@ -7,14 +7,11 @@
 **Student Registration Number:** IT23748408  
 **Testing Type:** Chat Sinhala Transliteration Accuracy Testing  
 **Website Tested:** https://www.pixelssuite.com/chat-translator  
-**GitHub Repository:** https://github.com/Methyachayangi/IT23748408-testing-playwright
 
 ## Project Description
 
 This project tests the accuracy of the Chat Sinhala transliteration function in the PixelSuite Chat Translator web application.
-
 The purpose of this assignment is to identify negative test scenarios where the application fails to correctly convert chat-style Singlish input into Sinhala output.
-
 The automation script reads test data from the Excel file, enters each Singlish input into the website, captures the actual Sinhala output, compares it with the expected output, and records the final status in the Excel sheet.
 
 ## Scope of Testing
